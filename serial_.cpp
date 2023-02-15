@@ -20,11 +20,10 @@ void apply_force(particle_t& particle, particle_t& neighbor) {
     if (r2 > cutoff * cutoff)
         return;
 
-    // Get the distance that is going to be used for force calculation
     r2 = fmax(r2, min_r * min_r);
     double r = sqrt(r2);
 
-    // Very simple short-range repulsive force - Location calculation
+    // Very simple short-range repulsive force
     double coef = (1 - cutoff / r) / r2 / mass;
     particle.ax += coef * dx;
     particle.ay += coef * dy;
@@ -41,7 +40,6 @@ void apply_force2(particle_t& particle, particle_t& neighbor) {
     if (r2 > cutoff * cutoff)
         return;
 
-    // Get the distance that is going to be used for force calculation
     r2 = fmax(r2, min_r * min_r);
     double r = sqrt(r2);
 
@@ -50,7 +48,6 @@ void apply_force2(particle_t& particle, particle_t& neighbor) {
     particle.ax += coef * dx;
     particle.ay += coef * dy;
 
-    // Same force, but in the opposite direction applies to the neighbor
     neighbor.ax -= coef * dx;
     neighbor.ay -= coef * dy;
 }
@@ -61,10 +58,8 @@ void move(particle_t& p, double size) {
     // Conserves energy better than explicit Euler method
     int bin_x = floor(p.x/bin_size);
     int bin_y = floor(p.y/bin_size);
-    // Get the bin index
     int orig_bin = bin_x*num_bins+bin_y;
 
-    // Update position and velocity
     p.vx += p.ax * dt;
     p.vy += p.ay * dt;
     p.x += p.vx * dt;
@@ -84,18 +79,14 @@ void move(particle_t& p, double size) {
     //rebin
     bin_x = floor(p.x/bin_size);
     bin_y = floor(p.y/bin_size);
-    // The location of the particle has changed, so we need to update the bin
     int new_bin = bin_x*num_bins+bin_y;
     if (orig_bin != new_bin) {
         for(int i = 0; i < bins[orig_bin].size(); ++i){
-            // Find the particle in the original bin
             if(bins[orig_bin][i] == &p){
-                // Remove the particle from the original bin
                 bins[orig_bin].erase(bins[orig_bin].begin() + i);
                 break;
             }
         }
-        // Add the particle to the new bin
         bins[new_bin].push_back(&p);
     }
 }
@@ -107,10 +98,9 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // algorithm begins. Do not do any particle simulation here
     
     //initializes bins
-    bin_size = fmax(cutoff+0.0001, 0.00025*size);
+    bin_size = fmax(cutoff+0.0001, 0.005*size);
     num_bins = floor(size/bin_size) + 1;
     bins = std::vector<std::vector<particle_t*>>(num_bins * num_bins);
-    // Add all particles to the bins
     for (int i = 0; i < num_parts; ++i) {
         int bin_x = floor(parts[i].x/bin_size);
         int bin_y = floor(parts[i].y/bin_size);
@@ -118,52 +108,36 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     }
 }
 
-void simulate_bins(std::vector<particle_t*> &bin_parts, std::vector<particle_t*> &neighbors) {
-    // Apply forces for all particles in the bin
-    for (int i = 0; i < bin_parts.size(); ++i) {
-        particle_t* part = bin_parts[i];
-        for (int j = 0; j < neighbors.size(); ++j) {
-            apply_force2(*part, *neighbors[j]);
-        }
-    }
-}
-
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     for (int i = 0; i < num_parts; ++i) {
         parts[i].ax = parts[i].ay = 0;
     }
-    
-    //iterate through every bin
-    for (int bin = 0; bin < num_bins*num_bins; bin++) {
-        int bin_x = bin/num_bins;
-        int bin_y = bin - bin_x*num_bins;
-        std::vector<particle_t*> &bin_parts = bins[bin];
-        int n_pts = bin_parts.size();
-        if (n_pts == 0) continue;
 
-        //Apply forces for all bins (x', y') such that (x' >= x and y' > y) or x' > x
+    for (int i = 0; i < num_parts; ++i) {
+
+        int bin_x = floor(parts[i].x/bin_size);
+        int bin_y = floor(parts[i].y/bin_size);
         
-        //same bin 
-        for (int i = 0; i < n_pts; i++) {
-            particle_t* part = bin_parts[i];
-            for (int j = i + 1; j < n_pts; j++) {
-                apply_force2(*part, *bin_parts[j]);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                int nx = bin_x + dx;
+                int ny = bin_y + dy;
+                if (!(nx >= 0 && nx < num_bins && ny >= 0 && ny < num_bins) || nx * num_bins + ny < bin_x * num_bins + bin_y) continue;
+                std::vector<particle_t*> &neighbors = bins[nx * num_bins + ny];
+                int num_neighors = neighbors.size();
+                if (nx * num_bins + ny > bin_x * num_bins + bin_y) {
+                    for (int j = 0; j < num_neighors; ++j) {
+                        apply_force2(parts[i], *bins[nx * num_bins + ny][j]);
+                    }
+                    continue;
+                }
+                for (int j = 0; j < num_neighors; ++j) {
+                    apply_force(parts[i], *bins[nx * num_bins + ny][j]);
+                }
             }
-        }
-        if (bin_x < num_bins - 1) {
-            simulate_bins(bin_parts, bins[bin + num_bins]);
-            if (bin_y < num_bins - 1) {
-                simulate_bins(bin_parts, bins[bin + num_bins + 1]);
-            }
-            if (bin_y > 0) {
-                simulate_bins(bin_parts, bins[bin + num_bins - 1]);
-            }
-        }
-        if (bin_y < num_bins - 1) {
-            simulate_bins(bin_parts, bins[bin + 1]);
-            
-        }
+        } 
     }
+
     // Move Particles
     for (int i = 0; i < num_parts; ++i) {
         move(parts[i], size);

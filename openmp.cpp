@@ -73,18 +73,33 @@ void move(particle_t& p, double size) {
     }
     
     //rebin
-    bin_x = floor(p.x/bin_size);
-    bin_y = floor(p.y/bin_size);
-    int new_bin = bin_x*num_bins+bin_y;
-    if (orig_bin != new_bin) {
-        for(int i = 0; i < bins[orig_bin].size(); ++i){
-            if(bins[orig_bin][i] == &p){
-                bins[orig_bin].erase(bins[orig_bin].begin() + i);
-                break;
+    #pragma omp critical
+    {
+        bin_x = floor(p.x/bin_size);
+        bin_y = floor(p.y/bin_size);
+        int new_bin = bin_x*num_bins+bin_y;
+        if (orig_bin != new_bin) {
+            for(int i = 0; i < bins[orig_bin].size(); ++i){
+                if(bins[orig_bin][i] == &p){
+                    bins[orig_bin].erase(bins[orig_bin].begin() + i);
+                    break;
+                }
             }
+            bins[new_bin].push_back(&p);
         }
-        bins[new_bin].push_back(&p);
     }
+    // bin_x = floor(p.x/bin_size);
+    // bin_y = floor(p.y/bin_size);
+    // int new_bin = bin_x*num_bins+bin_y;
+    // if (orig_bin != new_bin) {
+    //     for(int i = 0; i < bins[orig_bin].size(); ++i){
+    //         if(bins[orig_bin][i] == &p){
+    //             bins[orig_bin].erase(bins[orig_bin].begin() + i);
+    //             break;
+    //         }
+    //     }
+    //     bins[new_bin].push_back(&p);
+    // }
 }
 
 
@@ -94,7 +109,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // algorithm begins. Do not do any particle simulation here
     
     //initializes bins
-    bin_size = fmax(cutoff+0.0001, 0.00025*size);
+    bin_size = fmax(cutoff+0.0001, 0.0005*size);
     num_bins = floor(size/bin_size) + 1;
     bins = std::vector<std::vector<particle_t*>>(num_bins * num_bins);
     for (int i = 0; i < num_parts; ++i) {
@@ -164,13 +179,13 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         }
     }
     #pragma omp barrier
-    #pragma omp critical
-    {   if (omp_get_thread_num() == 0) {
-        // Move Particles
+    #pragma omp for
+    // {   if (omp_get_thread_num() == 0) {
+    //     // Move Particles
         for (int i = 0; i < num_parts; ++i) {
             move(parts[i], size);
         }
-        }
-    }
+    //     }
+    // }
     #pragma omp barrier
 }
