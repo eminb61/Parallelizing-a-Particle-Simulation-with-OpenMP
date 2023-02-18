@@ -9,6 +9,11 @@ double bin_size;
 
 std::vector<std::vector<particle_t*>> bins;
 int num_bins;
+std::vector<particle_t*> parts_to_rebin;
+std::vector<int> bins_to_debin;
+std::vector<omp_lock_t> bin_locks;
+int num_rebin = 0;
+int iter = 0;
 
 // Apply the force from neighbor to particle
 void apply_force(particle_t& particle, particle_t& neighbor, bool boundary) {
@@ -73,34 +78,20 @@ void move(particle_t& p, double size) {
     }
     
     //rebin
-    #pragma omp critical
-    {
-        bin_x = floor(p.x/bin_size);
-        bin_y = floor(p.y/bin_size);
-        int new_bin = bin_x*num_bins+bin_y;
-        if (orig_bin != new_bin) {
-            for(int i = 0; i < bins[orig_bin].size(); ++i){
-                if(bins[orig_bin][i] == &p){
-                    bins[orig_bin].erase(bins[orig_bin].begin() + i);
-                    break;
-                }
-            }
-            bins[new_bin].push_back(&p);
-        }
+    bin_x = floor(p.x/bin_size);
+    bin_y = floor(p.y/bin_size);
+    int new_bin = bin_x*num_bins+bin_y;
+    int rebin_idx;
+    if (orig_bin != new_bin) {
+        #pragma omp atomic capture
+        rebin_idx = num_rebin++;
+
+        parts_to_rebin[rebin_idx] = &p;
+        bins_to_debin[orig_bin] = iter;
     }
-    // bin_x = floor(p.x/bin_size);
-    // bin_y = floor(p.y/bin_size);
-    // int new_bin = bin_x*num_bins+bin_y;
-    // if (orig_bin != new_bin) {
-    //     for(int i = 0; i < bins[orig_bin].size(); ++i){
-    //         if(bins[orig_bin][i] == &p){
-    //             bins[orig_bin].erase(bins[orig_bin].begin() + i);
-    //             break;
-    //         }
-    //     }
-    //     bins[new_bin].push_back(&p);
-    // }
+
 }
+
 
 
 void init_simulation(particle_t* parts, int num_parts, double size) {
@@ -109,21 +100,40 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // algorithm begins. Do not do any particle simulation here
     
     //initializes bins
-    bin_size = fmax(cutoff+0.0001, 0.0005*size);
+    bin_size = fmax(cutoff+0.0001, 0.00025*size);
     num_bins = floor(size/bin_size) + 1;
     bins = std::vector<std::vector<particle_t*>>(num_bins * num_bins);
+    parts_to_rebin = std::vector<particle_t*>(num_parts+5);
+    bins_to_debin = std::vector<int>(num_bins * num_bins);
+    bin_locks = std::vector<omp_lock_t>(num_bins * num_bins);
     for (int i = 0; i < num_parts; ++i) {
         int bin_x = floor(parts[i].x/bin_size);
         int bin_y = floor(parts[i].y/bin_size);
         bins[bin_x*num_bins+bin_y].push_back(&parts[i]);
     }
+    for (int i = 0; i < num_bins * num_bins; ++i) {
+        omp_init_lock(&bin_locks[i]);
+    }
 }
 
-void simulate_bins(std::vector<particle_t*> &bin_parts, std::vector<particle_t*> &neighbors, bool boundary) {
+inline void simulate_bins(std::vector<particle_t*> &bin_parts, std::vector<particle_t*> &neighbors, bool boundary) {
     for (int i = 0; i < bin_parts.size(); ++i) {
         particle_t* part = bin_parts[i];
         for (int j = 0; j < neighbors.size(); ++j) {
             apply_force(*part, *neighbors[j], boundary);
+        }
+    }
+}
+
+void debin(std::vector<particle_t*> &bin_parts, int bin) {
+    for(int i = bin_parts.size()-1; i >= 0; --i){
+        particle_t p = *bin_parts[i];
+        int bin_x = floor(p.x/bin_size);
+        int bin_y = floor(p.y/bin_size);
+        int new_bin = bin_x*num_bins+bin_y;
+        
+        if (new_bin != bin) {
+            bin_parts.erase(bin_parts.begin() + i);
         }
     }
 }
@@ -133,8 +143,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     int id, nthreads;
     id = omp_get_thread_num();
     nthreads = omp_get_num_threads();
-    int extra_parts = num_parts % nthreads;
-
+    if (id == 0) iter++;
     #pragma omp for
     for (int i = 0; i < num_parts; ++i) {
         parts[i].ax = parts[i].ay = 0;
@@ -180,12 +189,28 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     }
     #pragma omp barrier
     #pragma omp for
-    // {   if (omp_get_thread_num() == 0) {
-    //     // Move Particles
-        for (int i = 0; i < num_parts; ++i) {
-            move(parts[i], size);
-        }
-    //     }
-    // }
+    for (int i = 0; i < num_parts; ++i) {
+        move(parts[i], size);
+    }
+
     #pragma omp barrier
+    #pragma omp for
+    for (int i = 0; i < num_bins*num_bins; ++i) {
+        if (bins_to_debin[i] == iter)
+            debin(bins[i], i);
+    }
+    //rebin parts that moved
+    #pragma omp barrier
+    #pragma omp for
+    for (int j = 0; j < num_rebin; ++j) {
+        particle_t* p = parts_to_rebin[j];
+        int bin_x = floor(p->x/bin_size);
+        int bin_y = floor(p->y/bin_size);
+        int new_bin = bin_x*num_bins+bin_y;
+        omp_set_lock(&bin_locks[new_bin]);
+        bins[new_bin].push_back(p);
+        omp_unset_lock(&bin_locks[new_bin]);
+    }
+    #pragma omp barrier
+    num_rebin = 0;
 }
